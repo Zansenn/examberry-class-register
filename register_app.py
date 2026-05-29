@@ -75,14 +75,19 @@ def adhoc_keys():
     return st.session_state.setdefault("adhoc_keys", set())
 
 
-def _configured_password():
-    """Shared app password from Streamlit secrets (cloud) or env (.env locally)."""
+def _configured_secret(name):
+    """A secret value from Streamlit secrets (cloud) or env (.env locally)."""
     try:
-        if "APP_PASSWORD" in st.secrets:
-            return st.secrets["APP_PASSWORD"]
+        if name in st.secrets:
+            return st.secrets[name]
     except Exception:
         pass  # no secrets file locally — fall back to env
-    return os.environ.get("APP_PASSWORD")
+    return os.environ.get(name)
+
+
+def _configured_password():
+    """Shared app password — the gate for the whole app."""
+    return _configured_secret("APP_PASSWORD")
 
 
 def require_password():
@@ -108,8 +113,30 @@ def require_password():
 
 
 def admin_rounds_panel(store):
-    """Sidebar admin controls to create and activate book-distribution rounds."""
+    """Sidebar admin controls to create and activate book-distribution rounds.
+
+    Locked behind a separate ADMIN_PASSWORD so ordinary tutors (who only know the
+    shared APP_PASSWORD) can't create or activate rounds."""
     with st.sidebar.expander("📚 Admin: book rounds"):
+        admin_pw = _configured_secret("ADMIN_PASSWORD")
+        if not admin_pw:
+            st.caption("Admin controls are disabled until an ADMIN_PASSWORD is set "
+                       "in the app's Secrets (cloud) or .env (local).")
+            return
+        if not st.session_state.get("admin_ok"):
+            entered = st.text_input("Admin password", type="password", key="admin_pw")
+            if st.button("Unlock admin"):
+                # constant-time compare so a wrong guess can't be timed
+                if hmac.compare_digest(entered, str(admin_pw)):
+                    st.session_state["admin_ok"] = True
+                    st.rerun()
+                else:
+                    st.error("Incorrect admin password.")
+            return
+        if st.button("Lock admin"):
+            st.session_state["admin_ok"] = False
+            st.rerun()
+
         rounds = store.read_rounds()
         active = next((r for r in rounds if r.get("is_active") == "true"), None)
         st.caption(f"Active round: **{active['label']}**" if active else "No active round")
