@@ -54,6 +54,23 @@ FAVOURITES_COLUMNS = [
 ]
 
 
+def _load_credentials():
+    """Service-account creds: a local key file if present (dev), otherwise the
+    JSON from Streamlit secrets under [gcp_service_account] (Streamlit Cloud,
+    where the repo has no key file)."""
+    if CREDENTIALS_FILE.exists():
+        return Credentials.from_service_account_file(str(CREDENTIALS_FILE), scopes=SCOPES)
+    try:
+        import streamlit as st
+        info = dict(st.secrets["gcp_service_account"])
+    except Exception as e:
+        raise RuntimeError(
+            "No service-account credentials. Add credentials/service-account.json "
+            "locally, or a [gcp_service_account] section to the Streamlit app's secrets."
+        ) from e
+    return Credentials.from_service_account_info(info, scopes=SCOPES)
+
+
 class AttendanceStore:
     def __init__(self, sheet_id=None):
         load_dotenv()
@@ -63,10 +80,7 @@ class AttendanceStore:
                 "No ATTENDANCE_SHEET_ID. Create a Google Sheet, share it with the "
                 "service-account email as Editor, and put its ID in .env."
             )
-        if not CREDENTIALS_FILE.exists():
-            raise RuntimeError(f"No service-account key at {CREDENTIALS_FILE}")
-        creds = Credentials.from_service_account_file(str(CREDENTIALS_FILE), scopes=SCOPES)
-        self._svc = build("sheets", "v4", credentials=creds)
+        self._svc = build("sheets", "v4", credentials=_load_credentials())
 
     # --- generic worksheet helpers -----------------------------------------
     def _ensure_worksheet(self, tab, columns):
