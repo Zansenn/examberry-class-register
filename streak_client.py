@@ -66,9 +66,13 @@ class StreakClient:
 
     # --- mutating (live CRM) ------------------------------------------------
 
-    def create_pipeline(self, name):
-        """Create a pipeline. Used to stand up a test roster for trying the app."""
-        return self._request("PUT", "/pipelines", params={"name": name})
+    def create_pipeline(self, name, team_key):
+        """Create a pipeline in a team. Used to stand up a test roster for the app.
+
+        team_key: copy it from any existing pipeline (its `teamKey`)."""
+        return self._request(
+            "PUT", "/pipelines", params={"name": name, "teamKey": team_key}
+        )
 
     def create_stage(self, pipeline_key, name):
         """Add a stage (class) to a pipeline. Returns the stage incl. its key."""
