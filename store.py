@@ -29,6 +29,11 @@ from googleapiclient.errors import HttpError
 CREDENTIALS_FILE = Path(__file__).parent / "credentials" / "service-account.json"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]  # write
 
+# googleapiclient retries transient socket/ssl errors when num_retries > 0
+# (default is 0). Streamlit Cloud's cached client can hit a stale TLS
+# connection between reruns; retrying re-establishes it instead of crashing.
+NUM_RETRIES = 5
+
 ATTENDANCE_TAB = "attendance"
 ATTENDANCE_COLUMNS = [
     "year", "pipeline_key", "stage_key", "class_name", "class_date",
@@ -85,21 +90,22 @@ class AttendanceStore:
     # --- generic worksheet helpers -----------------------------------------
     def _ensure_worksheet(self, tab, columns):
         """Create `tab` if missing and write the header row if empty. Idempotent."""
-        meta = self._svc.spreadsheets().get(spreadsheetId=self.sheet_id).execute()
+        meta = self._svc.spreadsheets().get(
+            spreadsheetId=self.sheet_id).execute(num_retries=NUM_RETRIES)
         titles = {s["properties"]["title"] for s in meta.get("sheets", [])}
         if tab not in titles:
             self._svc.spreadsheets().batchUpdate(
                 spreadsheetId=self.sheet_id,
                 body={"requests": [{"addSheet": {"properties": {"title": tab}}}]},
-            ).execute()
+            ).execute(num_retries=NUM_RETRIES)
         first = self._svc.spreadsheets().values().get(
             spreadsheetId=self.sheet_id, range=f"{tab}!A1:A1",
-        ).execute().get("values", [])
+        ).execute(num_retries=NUM_RETRIES).get("values", [])
         if not first:
             self._svc.spreadsheets().values().update(
                 spreadsheetId=self.sheet_id, range=f"{tab}!A1",
                 valueInputOption="RAW", body={"values": [columns]},
-            ).execute()
+            ).execute(num_retries=NUM_RETRIES)
 
     def _append(self, tab, columns, rows):
         if not rows:
@@ -109,7 +115,7 @@ class AttendanceStore:
             spreadsheetId=self.sheet_id, range=f"{tab}!A1",
             valueInputOption="RAW", insertDataOption="INSERT_ROWS",
             body={"values": values},
-        ).execute()
+        ).execute(num_retries=NUM_RETRIES)
         return len(values)
 
     def _read(self, tab):
@@ -119,7 +125,7 @@ class AttendanceStore:
         try:
             vals = self._svc.spreadsheets().values().get(
                 spreadsheetId=self.sheet_id, range=f"{tab}!A1:ZZ",
-            ).execute().get("values", [])
+            ).execute(num_retries=NUM_RETRIES).get("values", [])
         except HttpError as e:
             if e.resp.status == 400:
                 return []
@@ -173,13 +179,13 @@ class AttendanceStore:
         """Replace all data rows (keeps header)."""
         self._svc.spreadsheets().values().clear(
             spreadsheetId=self.sheet_id, range=f"{tab}!A2:ZZ",
-        ).execute()
+        ).execute(num_retries=NUM_RETRIES)
         if rows:
             values = [[str(r.get(c, "")) for c in columns] for r in rows]
             self._svc.spreadsheets().values().update(
                 spreadsheetId=self.sheet_id, range=f"{tab}!A2",
                 valueInputOption="RAW", body={"values": values},
-            ).execute()
+            ).execute(num_retries=NUM_RETRIES)
 
     # --- books --------------------------------------------------------------
     def append_books(self, rows):
