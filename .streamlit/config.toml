@@ -1,0 +1,25 @@
+# Examberry brand theme. Colours taken from the logo
+# (blue #2A3798, berry-red #EF2A1E, leaf-green #35A70D); font Inter, as on examberry.com.
+[theme]
+base = "light"
+primaryColor = "#2A3798"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F5F6FA"
+textColor = "#16213E"
+linkColor = "#2A3798"
+font = "Inter, sans-serif"
+
+[[theme.fontFaces]]
+family = "Inter"
+url = "https://fonts.gstatic.com/s/inter/v13/UcCO3FwrK3iLTeHuS_fvQtMwCp50KnMa1ZL7.woff2"
+weight = "400"
+
+[[theme.fontFaces]]
+family = "Inter"
+url = "https://fonts.gstatic.com/s/inter/v13/UcCO3FwrK3iLTeHuS_fvQtMwCp50KnMa25L7.woff2"
+weight = "600"
+
+[[theme.fontFaces]]
+family = "Inter"
+url = "https://fonts.gstatic.com/s/inter/v13/UcCO3FwrK3iLTeHuS_fvQtMwCp50KnMa1pL7.woff2"
+weight = "700"

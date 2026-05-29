@@ -1,0 +1,9 @@
+# secrets: never commit
+credentials/
+.env
+.streamlit/secrets.toml
+
+# python / tooling
+.venv/
+__pycache__/
+*.pyc
