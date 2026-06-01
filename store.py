@@ -59,6 +59,12 @@ FAVOURITES_COLUMNS = [
 ]
 
 
+# Per-student exam performance, written nightly by the dashboard's
+# export_exam_summary.py (read-only here). Keyed by box_key so it joins straight
+# onto the roster. The dashboard owns the columns; we read by header.
+EXAM_SUMMARY_TAB = "exam_summary"
+
+
 def _load_credentials():
     """Service-account creds: a local key file if present (dev), otherwise the
     JSON from Streamlit secrets under [gcp_service_account] (Streamlit Cloud,
@@ -194,6 +200,11 @@ class AttendanceStore:
 
     def read_books(self):
         return self._read(BOOKS_TAB)
+
+    # --- exam summary (read-only; written by the dashboard ETL) -------------
+    def read_exam_summary(self):
+        """Per-student exam performance rows, or [] if the tab isn't there yet."""
+        return self._read(EXAM_SUMMARY_TAB)
 
     # --- saved classes (favourites) ----------------------------------------
     def read_favourites(self, tutor=None):

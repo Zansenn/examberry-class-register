@@ -70,6 +70,52 @@ def get_pipelines():
     return client.list_pipelines()
 
 
+# RAG dot + a verdict word for the cramped roster row. Cloud strips most colour,
+# so the emoji circle carries the signal and the word backs it up for clarity.
+RAG_DOT = {"red": "🔴", "amber": "🟡", "green": "🟢", "grey": "⚪"}
+RAG_WORD = {"red": "needs support", "amber": "on watch", "green": "on track",
+            "grey": "no data"}
+
+
+@st.cache_data(ttl=300)
+def get_exam_summary():
+    """box_key -> per-student exam summary dict, from the dashboard-written tab.
+
+    Empty dict (not an error) if the tab is missing or the ETL hasn't run yet, so
+    the register works exactly as before when no exam data is available."""
+    _, store = get_clients()
+    try:
+        rows = store.read_exam_summary()
+    except Exception:
+        return {}
+    return {r["box_key"]: r for r in rows if r.get("box_key")}
+
+
+def _fmt_pct(v):
+    try:
+        return f"{float(v):.0f}%"
+    except (TypeError, ValueError):
+        return None
+
+
+def format_perf(p):
+    """One compact line of exam performance for under a student's name.
+    Values arrive from the sheet as strings, so coerce defensively."""
+    parts = [RAG_DOT.get(p.get("rag", "grey"), "⚪")]
+    if (avg := _fmt_pct(p.get("avg_pct"))):
+        parts.append(f"avg {avg}")
+    if (last := _fmt_pct(p.get("last_pct"))):
+        label = (p.get("last_label") or "").strip()
+        parts.append(f"last {last}" + (f" ({label})" if label else ""))
+    try:
+        missed = int(float(p.get("missed", 0)))
+    except (TypeError, ValueError):
+        missed = 0
+    if missed > 0:
+        parts.append(f"⚠ {missed} missed")
+    return " · ".join(parts)
+
+
 def adhoc_keys():
     """box_keys this session created as ad-hoc, so we can flag + offer removal."""
     return st.session_state.setdefault("adhoc_keys", set())
@@ -240,6 +286,7 @@ def main():
     students = roster.class_roster(client, pipe["key"], stage_key)
     holding = roster.holding_stage_key(pipe)
     adhoc = adhoc_keys()
+    exam_summary = get_exam_summary()  # box_key -> performance; {} if no ELP data
 
     # Books: only show the checkbox column when an admin has activated a round.
     # Students already recorded for the round are shown ticked + locked, so the
@@ -259,6 +306,13 @@ def main():
     st.caption(caption)
     if active_round:
         st.caption("📚 Tick the **(books given)** box beside a student once they've received their books this round.")
+    if any(s["box_key"] in exam_summary for s in students):
+        st.caption(
+            "📊 Exam performance (updated nightly): "
+            "🟢 on track · 🟡 on watch · 🔴 needs support · "
+            "**avg** = average score this year · **last** = most recent test · "
+            "**⚠ missed** = tests their year group sat that they haven't."
+        )
 
     marks = {}
     books_ticked = {}
@@ -267,6 +321,8 @@ def main():
         layout = [4, 5, 1, 1] if active_round else [4, 6, 1]
         cols = st.columns(layout)
         cols[0].markdown(f"{'🆕 ' if is_adhoc else ''}**{s['name']}**")
+        if (perf := exam_summary.get(s["box_key"])):
+            cols[0].caption(format_perf(perf))
         marks[s["box_key"]] = cols[1].radio(
             s["name"], STATUS_OPTIONS, index=0, horizontal=True,
             label_visibility="collapsed", key=f"mark_{s['box_key']}",
