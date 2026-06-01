@@ -76,6 +76,18 @@ RAG_DOT = {"red": "🔴", "amber": "🟡", "green": "🟢", "grey": "⚪"}
 RAG_WORD = {"red": "needs support", "amber": "on watch", "green": "on track",
             "grey": "no data"}
 
+# A student's record on the Examberry Learning Platform. The exam summary's
+# elp_user_id IS the WordPress user id, so this opens their LearnDash admin
+# record. Only resolves for someone logged into the ELP with permission to view
+# that user; the domain is public so it's safe in this public repo.
+ELP_PROFILE_URL = "https://examberrylearning.com/wp-admin/user-edit.php?user_id={uid}"
+
+
+def elp_profile_url(perf):
+    """The ELP record URL for a student, or None if we have no numeric user id."""
+    uid = str((perf or {}).get("elp_user_id", "")).strip()
+    return ELP_PROFILE_URL.format(uid=uid) if uid.isdigit() else None
+
 
 @st.cache_data(ttl=300)
 def get_exam_summary():
@@ -328,7 +340,8 @@ def main():
             "🟢 on track · 🟡 on watch · 🔴 needs support · "
             "**avg** = average score this year · **last** = most recent test · "
             "second line = average per subject (**M**aths · **E**nglish · **NVR** · **VR**) · "
-            "**⚠ missed** = tests their year group sat that they haven't."
+            "**⚠ missed** = tests their year group sat that they haven't. "
+            "Click a student's name to open their ELP record."
         )
 
     marks = {}
@@ -337,8 +350,13 @@ def main():
         is_adhoc = s["box_key"] in adhoc
         layout = [4, 5, 1, 1] if active_round else [4, 6, 1]
         cols = st.columns(layout)
-        cols[0].markdown(f"{'🆕 ' if is_adhoc else ''}**{s['name']}**")
-        if (perf := exam_summary.get(s["box_key"])):
+        prefix = "🆕 " if is_adhoc else ""
+        perf = exam_summary.get(s["box_key"])
+        url = elp_profile_url(perf)
+        # Link the name to the student's ELP record when we can resolve it.
+        name_md = f"[**{s['name']}**]({url})" if url else f"**{s['name']}**"
+        cols[0].markdown(prefix + name_md)
+        if perf:
             cols[0].caption(format_perf(perf))
             if (subj_line := format_subjects(perf)):
                 cols[0].caption(subj_line)
