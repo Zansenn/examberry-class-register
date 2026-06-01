@@ -111,11 +111,15 @@ def _fmt_pct(v):
 
 
 def format_perf(p):
-    """One compact line of exam performance for under a student's name.
+    """One compact line of exam performance for under a student's name, mirroring
+    the ELP profile: the student's latest term's Online Tests overall.
     Values arrive from the sheet as strings, so coerce defensively."""
     parts = [RAG_DOT.get(p.get("rag", "grey"), "⚪")]
-    if (avg := _fmt_pct(p.get("avg_pct"))):
-        parts.append(f"avg {avg}")
+    term = (p.get("term_label") or "").strip()
+    if (overall := _fmt_pct(p.get("overall_pct"))):
+        parts.append(f"{term} {overall}".strip() if term else f"overall {overall}")
+    elif term:
+        parts.append(term)
     if (last := _fmt_pct(p.get("last_pct"))):
         label = (p.get("last_label") or "").strip()
         parts.append(f"last {last}" + (f" ({label})" if label else ""))
@@ -128,14 +132,15 @@ def format_perf(p):
     return " · ".join(parts)
 
 
-# Per-subject averages, shown on a second line. '–' = no test in that subject yet.
-SUBJECT_FIELDS = [("M", "avg_maths"), ("E", "avg_english"),
-                  ("NVR", "avg_nvr"), ("VR", "avg_vr")]
+# Per-subject averages for the latest term, shown on a second line.
+# '–' = no test in that subject this term.
+SUBJECT_FIELDS = [("M", "maths_pct"), ("E", "eng_pct"),
+                  ("NVR", "nvr_pct"), ("VR", "vr_pct")]
 
 
 def format_subjects(p):
-    """'M 85% · E 71% · NVR 66% · VR –' — per-subject breakdown, or None if the
-    student has no subject data at all (older rows before the columns existed)."""
+    """'M 85% · E 71% · NVR 66% · VR –' — per-subject breakdown for the latest
+    term, or None if the student has no subject data at all."""
     cells = [f"{lbl} {v}" if (v := _fmt_pct(p.get(field))) else f"{lbl} –"
              for lbl, field in SUBJECT_FIELDS]
     # If every subject is blank there's nothing to add beyond the overall line.
@@ -336,10 +341,10 @@ def main():
         st.caption("📚 Tick the **(books given)** box beside a student once they've received their books this round.")
     if any(s["box_key"] in exam_summary for s in students):
         st.caption(
-            "📊 Exam performance (updated nightly): "
+            "📊 Exam performance (updated nightly, mirrors the ELP): "
             "🟢 on track · 🟡 on watch · 🔴 needs support · "
-            "**avg** = average score this year · **last** = most recent test · "
-            "second line = average per subject (**M**aths · **E**nglish · **NVR** · **VR**) · "
+            "**Term N** = latest term's online-test overall · **last** = most recent test · "
+            "second line = per-subject this term (**M**aths · **E**nglish · **NVR** · **VR**) · "
             "**⚠ missed** = tests their year group sat that they haven't. "
             "Click a student's name to open their ELP record."
         )
