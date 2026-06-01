@@ -76,17 +76,17 @@ RAG_DOT = {"red": "🔴", "amber": "🟡", "green": "🟢", "grey": "⚪"}
 RAG_WORD = {"red": "needs support", "amber": "on watch", "green": "on track",
             "grey": "no data"}
 
-# A student's record on the Examberry Learning Platform. The exam summary's
-# elp_user_id IS the WordPress user id, so this opens their LearnDash admin
-# record. Only resolves for someone logged into the ELP with permission to view
-# that user; the domain is public so it's safe in this public repo.
-ELP_PROFILE_URL = "https://examberrylearning.com/wp-admin/user-edit.php?user_id={uid}"
+# A student's record on the Examberry Learning Platform — the front-end profile
+# page keyed by the ELP student code (e.g. '32DR271013'), viewable by any logged-in
+# ELP user. The domain is public, so it's safe in this public repo.
+ELP_PROFILE_URL = "https://examberrylearning.com/student-directory/{code}/student-profile/"
 
 
 def elp_profile_url(perf):
-    """The ELP record URL for a student, or None if we have no numeric user id."""
-    uid = str((perf or {}).get("elp_user_id", "")).strip()
-    return ELP_PROFILE_URL.format(uid=uid) if uid.isdigit() else None
+    """The ELP record URL for a student, or None if we have no student code
+    (e.g. an email-only crosswalk match carries no code)."""
+    code = str((perf or {}).get("elp_code", "")).strip()
+    return ELP_PROFILE_URL.format(code=code) if code else None
 
 
 @st.cache_data(ttl=300)
