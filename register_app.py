@@ -116,6 +116,22 @@ def format_perf(p):
     return " · ".join(parts)
 
 
+# Per-subject averages, shown on a second line. '–' = no test in that subject yet.
+SUBJECT_FIELDS = [("M", "avg_maths"), ("E", "avg_english"),
+                  ("NVR", "avg_nvr"), ("VR", "avg_vr")]
+
+
+def format_subjects(p):
+    """'M 85% · E 71% · NVR 66% · VR –' — per-subject breakdown, or None if the
+    student has no subject data at all (older rows before the columns existed)."""
+    cells = [f"{lbl} {v}" if (v := _fmt_pct(p.get(field))) else f"{lbl} –"
+             for lbl, field in SUBJECT_FIELDS]
+    # If every subject is blank there's nothing to add beyond the overall line.
+    if all(c.endswith("–") for c in cells):
+        return None
+    return " · ".join(cells)
+
+
 def adhoc_keys():
     """box_keys this session created as ad-hoc, so we can flag + offer removal."""
     return st.session_state.setdefault("adhoc_keys", set())
@@ -311,6 +327,7 @@ def main():
             "📊 Exam performance (updated nightly): "
             "🟢 on track · 🟡 on watch · 🔴 needs support · "
             "**avg** = average score this year · **last** = most recent test · "
+            "second line = average per subject (**M**aths · **E**nglish · **NVR** · **VR**) · "
             "**⚠ missed** = tests their year group sat that they haven't."
         )
 
@@ -323,6 +340,8 @@ def main():
         cols[0].markdown(f"{'🆕 ' if is_adhoc else ''}**{s['name']}**")
         if (perf := exam_summary.get(s["box_key"])):
             cols[0].caption(format_perf(perf))
+            if (subj_line := format_subjects(perf)):
+                cols[0].caption(subj_line)
         marks[s["box_key"]] = cols[1].radio(
             s["name"], STATUS_OPTIONS, index=0, horizontal=True,
             label_visibility="collapsed", key=f"mark_{s['box_key']}",
