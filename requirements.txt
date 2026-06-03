@@ -1,5 +1,12 @@
-streamlit>=1.36
-requests>=2.31
-python-dotenv>=1.0
-google-auth>=2.30
-google-api-python-client>=2.130
+# Pinned to exact versions for reproducible deploys.
+#
+# Streamlit Community Cloud re-resolves dependencies on every redeploy. With
+# open ranges (>=) that silently pulls whatever is newest at the time — which is
+# how a deploy ended up on Python 3.14 / pandas 3.0 / numpy 2.4 without us asking.
+# A new major can break the app between deploys with no code change on our side.
+# Bump these deliberately (and test), never by accident.
+streamlit==1.58.0
+requests==2.34.2
+python-dotenv==1.2.2
+google-auth==2.53.0
+google-api-python-client==2.197.0

@@ -13,12 +13,19 @@ freely. The create/move methods mutate the live CRM — call them deliberately.
 """
 
 import os
+import time
 
 import requests
 from dotenv import load_dotenv
 
 API_ROOT = "https://www.streak.com/api/v1"
 TIMEOUT = 30
+
+# Transient failures to retry rather than surface as a hard error: rate limiting
+# (429) and the usual gateway/server hiccups. With ~50 tutors sharing one API key
+# the odd 429 is expected; a short exponential backoff rides it out.
+RETRY_STATUSES = {429, 500, 502, 503, 504}
+MAX_ATTEMPTS = 4
 
 
 class StreakError(RuntimeError):
@@ -42,10 +49,27 @@ class StreakClient:
 
     def _request(self, method, path, **kwargs):
         url = f"{API_ROOT}{path}"
-        resp = self._session.request(method, url, timeout=TIMEOUT, **kwargs)
-        if not resp.ok:
-            raise StreakError(f"{method} {path} -> {resp.status_code}: {resp.text[:300]}")
-        return resp.json()
+        last_err = None
+        for attempt in range(MAX_ATTEMPTS):
+            try:
+                resp = self._session.request(method, url, timeout=TIMEOUT, **kwargs)
+            except requests.RequestException as e:
+                # Network/TLS/timeout — retry with backoff before giving up.
+                last_err = e
+                if attempt < MAX_ATTEMPTS - 1:
+                    time.sleep(0.5 * (2 ** attempt))
+                    continue
+                raise StreakError(f"{method} {path} failed after "
+                                  f"{MAX_ATTEMPTS} attempts: {e}") from e
+            if resp.status_code in RETRY_STATUSES and attempt < MAX_ATTEMPTS - 1:
+                time.sleep(0.5 * (2 ** attempt))  # 0.5s, 1s, 2s
+                continue
+            if not resp.ok:
+                raise StreakError(f"{method} {path} -> {resp.status_code}: {resp.text[:300]}")
+            return resp.json()
+        # Exhausted retries on a retryable status.
+        raise StreakError(f"{method} {path} kept failing (last status "
+                          f"{getattr(resp, 'status_code', '?')}); {last_err or ''}".strip())
 
     # --- read-only ----------------------------------------------------------
 

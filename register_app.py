@@ -103,6 +103,78 @@ def get_exam_summary():
     return {r["box_key"]: r for r in rows if r.get("box_key")}
 
 
+# --- cached reads + resilient calls ------------------------------------------
+# Streamlit re-runs this whole script on every widget interaction (every radio
+# click, every checkbox), and on Community Cloud a *single* process serves all
+# ~50 tutors. So an uncached read here is one API call per click per tutor, which
+# quickly exhausts Google Sheets' ~60 reads/min-per-account and Streak's limits
+# — the cause of the "it just breaks" crashes under load. Caching collapses that
+# to about one call per key per TTL across everyone; writes call the matching
+# .clear() so a tutor still sees their own change immediately.
+READ_TTL = 60  # seconds — live enough for a register, easy on the APIs
+
+
+@st.cache_data(ttl=READ_TTL)
+def cached_roster(pipeline_key, stage_key):
+    client, _ = get_clients()
+    return roster.class_roster(client, pipeline_key, stage_key)
+
+
+@st.cache_data(ttl=READ_TTL)
+def cached_active_round():
+    _, store = get_clients()
+    return store.active_round()
+
+
+@st.cache_data(ttl=READ_TTL)
+def cached_rounds():
+    _, store = get_clients()
+    return store.read_rounds()
+
+
+@st.cache_data(ttl=READ_TTL)
+def cached_books_received(round_key):
+    """box_keys already recorded for `round_key`, computed once per TTL."""
+    _, store = get_clients()
+    return {b["box_key"] for b in store.read_books()
+            if b.get("round_key") == round_key and b.get("box_key")}
+
+
+@st.cache_data(ttl=READ_TTL)
+def cached_favourites(tutor):
+    _, store = get_clients()
+    return store.read_favourites(tutor)
+
+
+def _clear_roster_cache():
+    cached_roster.clear()
+
+
+def _clear_round_cache():
+    cached_active_round.clear()
+    cached_rounds.clear()
+    cached_books_received.clear()
+
+
+def _clear_favourites_cache():
+    cached_favourites.clear()
+
+
+def safe(action, fn, *args, **kwargs):
+    """Run an external (Streak/Sheets) call. On failure, show a friendly message
+    plus a Retry button and halt *this* run cleanly via st.stop(), instead of
+    letting an unhandled exception crash the tutor's whole session.
+
+    `action` is a short verb phrase shown to the tutor, e.g. 'load this class'."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception:
+        st.error(f"⚠️ Couldn't {action} just now — the server may be busy. "
+                 "Wait a few seconds and tap Retry. Anything you've marked is kept.")
+        st.button("Retry", key=f"retry_{action}".replace(" ", "_"))
+        st.stop()
+
+
 def _fmt_pct(v):
     try:
         return f"{float(v):.0f}%"
@@ -216,7 +288,7 @@ def admin_rounds_panel(store):
             st.session_state["admin_ok"] = False
             st.rerun()
 
-        rounds = store.read_rounds()
+        rounds = safe("load book rounds", cached_rounds)
         active = next((r for r in rounds if r.get("is_active") == "true"), None)
         st.caption(f"Active round: **{active['label']}**" if active else "No active round")
 
@@ -224,16 +296,16 @@ def admin_rounds_panel(store):
         if labels:
             choice = st.selectbox("Activate a round", ["— none —"] + list(labels))
             if st.button("Set active"):
-                if choice == "— none —":
-                    store.set_active_round(None)
-                else:
-                    store.set_active_round(labels[choice])
+                safe("update the active round", store.set_active_round,
+                     None if choice == "— none —" else labels[choice])
+                _clear_round_cache()
                 st.rerun()
 
         new_label = st.text_input("New round label", placeholder="Term 1 – 1st")
         if st.button("Create round"):
             if new_label.strip():
-                store.add_round(new_label.strip())
+                safe("create the round", store.add_round, new_label.strip())
+                _clear_round_cache()
                 st.success(f"Created round '{new_label.strip()}'")
                 st.rerun()
             else:
@@ -249,7 +321,7 @@ def main():
     st.title("Class Register")
 
     client, store = get_clients()
-    pipelines = get_pipelines()
+    pipelines = safe("load the class lists", get_pipelines)
 
     # --- who + what (sidebar) ----------------------------------------------
     tutor = st.sidebar.text_input("Your email (tutor)")
@@ -261,7 +333,7 @@ def main():
 
     # A tutor's saved classes (keyed by their email). Lets them jump straight
     # to a class instead of stepping through year -> group -> class each time.
-    saved = store.read_favourites(tutor.strip()) if tutor.strip() else []
+    saved = safe("load your saved classes", cached_favourites, tutor.strip()) if tutor.strip() else []
 
     use_saved = False
     if saved:
@@ -277,7 +349,9 @@ def main():
             st.warning("That saved class's pipeline no longer exists in Streak. "
                        "Remove it below and pick it again from Browse all.")
             if st.button("Remove this saved class"):
-                store.remove_favourite(tutor.strip(), fav["stage_key"])
+                safe("remove the saved class", store.remove_favourite,
+                     tutor.strip(), fav["stage_key"])
+                _clear_favourites_cache()
                 st.rerun()
             return
         year, stage_key, class_label = fav["year"], fav["stage_key"], fav["class_name"]
@@ -300,15 +374,18 @@ def main():
         is_saved = any(f["stage_key"] == stage_key for f in saved)
         if is_saved:
             if st.button("★ Saved — remove from my classes"):
-                store.remove_favourite(tutor.strip(), stage_key)
+                safe("remove the saved class", store.remove_favourite,
+                     tutor.strip(), stage_key)
+                _clear_favourites_cache()
                 st.rerun()
         elif st.button("☆ Save this class for quick access"):
-            store.add_favourite({
+            safe("save this class", store.add_favourite, {
                 "tutor": tutor.strip(), "year": year,
                 "pipeline_key": pipe["key"], "pipeline_name": pipe["name"],
                 "stage_key": stage_key, "class_name": class_label,
                 "saved_at": dt.datetime.now().isoformat(timespec="seconds"),
             })
+            _clear_favourites_cache()
             st.rerun()
     else:
         st.caption("Enter your email in the sidebar to save classes for quick access.")
@@ -316,7 +393,7 @@ def main():
     class_date = st.date_input("Date of class", value=dt.date.today())
 
     # --- roster -------------------------------------------------------------
-    students = roster.class_roster(client, pipe["key"], stage_key)
+    students = safe("load this class", cached_roster, pipe["key"], stage_key)
     holding = roster.holding_stage_key(pipe)
     adhoc = adhoc_keys()
     exam_summary = get_exam_summary()  # box_key -> performance; {} if no ELP data
@@ -324,13 +401,11 @@ def main():
     # Books: only show the checkbox column when an admin has activated a round.
     # Students already recorded for the round are shown ticked + locked, so the
     # outstanding pupils stand out.
-    active_round = store.active_round()
+    active_round = safe("check the books round", cached_active_round)
     already_received = set()
     if active_round:
-        already_received = {
-            b["box_key"] for b in store.read_books()
-            if b.get("round_key") == active_round["round_key"]
-        }
+        already_received = safe("load book handouts", cached_books_received,
+                                active_round["round_key"])
 
     st.subheader(f"{class_label}")
     caption = f"{len(students)} students"
@@ -381,8 +456,9 @@ def main():
         rm_col = cols[-1]
         if is_adhoc and holding and rm_col.button("✕", key=f"rm_{s['box_key']}",
                                                    help="Remove ad-hoc student"):
-            client.set_box_stage(s["box_key"], holding)
+            safe("remove the ad-hoc student", client.set_box_stage, s["box_key"], holding)
             adhoc.discard(s["box_key"])
+            _clear_roster_cache()
             st.rerun()
 
     # --- add ad-hoc student -------------------------------------------------
@@ -390,8 +466,10 @@ def main():
         new_name = st.text_input("Student name", key="adhoc_name")
         if st.button("Add to this class"):
             if new_name.strip():
-                box = client.create_box(pipe["key"], new_name.strip(), stage_key=stage_key)
+                box = safe("add the ad-hoc student", client.create_box,
+                           pipe["key"], new_name.strip(), stage_key=stage_key)
                 adhoc.add(box["key"])
+                _clear_roster_cache()
                 st.success(f"Added {new_name.strip()} to {class_label}")
                 st.rerun()
             else:
@@ -416,7 +494,6 @@ def main():
         if not tutor.strip():
             st.error("Enter your email in the sidebar before submitting.")
             return
-        store.ensure_header()
         now = dt.datetime.now().isoformat(timespec="seconds")
         rows = [{
             "year": year,
@@ -431,7 +508,6 @@ def main():
             "submitted_by": tutor.strip(),
             "submitted_at": now,
         } for s in students]
-        store.append_rows(rows)
 
         # Record newly-ticked book handouts (skip those already recorded).
         book_rows = []
@@ -449,8 +525,20 @@ def main():
                         "recorded_by": tutor.strip(),
                         "recorded_at": now,
                     })
+
+        # Don't crash the session on a transient API error: keep the marks on
+        # screen (widget state survives the rerun) so the tutor can just retry.
+        try:
+            store.ensure_header()
+            store.append_rows(rows)
             if book_rows:
                 store.append_books(book_rows)
+                _clear_round_cache()  # so the ticks show locked next render
+        except Exception:
+            st.error("⚠️ Couldn't save the register just now — the server may be "
+                     "busy. Your marks are still here; tap **Submit register** "
+                     "again in a few seconds.")
+            return
 
         msg = f"Submitted {len(rows)} marks for {class_label} on {class_date}."
         if book_rows:
