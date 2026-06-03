@@ -254,8 +254,10 @@ def require_password():
     st.title("Class Register")
     entered = st.text_input("App password", type="password")
     if st.button("Enter"):
-        # constant-time compare so a wrong guess can't be timed
-        if hmac.compare_digest(entered, str(expected)):
+        # constant-time compare so a wrong guess can't be timed. Strip both sides:
+        # an invisible trailing newline/space in the secret (a common Streamlit
+        # secrets paste artifact) would otherwise reject the correct password.
+        if hmac.compare_digest(entered.strip(), str(expected).strip()):
             st.session_state["auth_ok"] = True
             st.rerun()
         else:
@@ -277,8 +279,9 @@ def admin_rounds_panel(store):
         if not st.session_state.get("admin_ok"):
             entered = st.text_input("Admin password", type="password", key="admin_pw")
             if st.button("Unlock admin"):
-                # constant-time compare so a wrong guess can't be timed
-                if hmac.compare_digest(entered, str(admin_pw)):
+                # constant-time compare; strip both sides so invisible whitespace
+                # in the secret can't reject the correct password (see require_password).
+                if hmac.compare_digest(entered.strip(), str(admin_pw).strip()):
                     st.session_state["admin_ok"] = True
                     st.rerun()
                 else:
