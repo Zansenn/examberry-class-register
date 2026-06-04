@@ -134,10 +134,10 @@ def cached_rounds():
 
 @st.cache_data(ttl=READ_TTL)
 def cached_books_received(round_key):
-    """box_keys already recorded for `round_key`, computed once per TTL."""
+    """box_keys currently recorded as received for `round_key` (latest state per
+    student, so a corrected un-tick is reflected). Computed once per TTL."""
     _, store = get_clients()
-    return {b["box_key"] for b in store.read_books()
-            if b.get("round_key") == round_key and b.get("box_key")}
+    return store.received_box_keys(round_key)
 
 
 @st.cache_data(ttl=READ_TTL)
@@ -411,12 +411,16 @@ def main():
                                 active_round["round_key"])
 
     st.subheader(f"{class_label}")
-    caption = f"{len(students)} students"
+    st.caption(f"{len(students)} students")
     if active_round:
-        caption += f"  ·  📚 books round: {active_round['label']}"
-    st.caption(caption)
-    if active_round:
-        st.caption("📚 Tick the **(books given)** box beside a student once they've received their books this round.")
+        # Prominent so the tutor always knows *which* delivery they're recording
+        # (only one round is active at a time; an admin re-activates an earlier
+        # round to catch up a child who missed it).
+        st.info(
+            f"📚 **Book handout — {active_round['label']}**  \n"
+            "Tick **(books given)** beside each student as they receive *this* "
+            "delivery's books. Untick to correct a mistake."
+        )
     if any(s["box_key"] in exam_summary for s in students):
         st.caption(
             "📊 Exam performance (updated nightly, mirrors the ELP): "
@@ -450,8 +454,8 @@ def main():
         if active_round:
             had = s["box_key"] in already_received
             books_ticked[s["box_key"]] = cols[2].checkbox(
-                "📚 (books given)", value=had, disabled=had, key=f"book_{s['box_key']}",
-                help="Tick = books given this round" if not had else "Already recorded",
+                "📚 (books given)", value=had, key=f"book_{s['box_key']}",
+                help="Tick = books given this round · untick to correct a mistake",
                 label_visibility="collapsed",
             )
         # Removal is only offered for ad-hoc adds, and only where a holding
@@ -512,11 +516,16 @@ def main():
             "submitted_at": now,
         } for s in students]
 
-        # Record newly-ticked book handouts (skip those already recorded).
+        # Record book-handout *changes* only: a row whenever a student's tick now
+        # differs from what's on record (newly given, or unticked to correct a
+        # mistake). Readers take the latest event per student, so this re-submit
+        # overwrites the earlier state without rewriting the whole tab.
         book_rows = []
         if active_round:
             for s in students:
-                if books_ticked.get(s["box_key"]) and s["box_key"] not in already_received:
+                desired = bool(books_ticked.get(s["box_key"]))
+                current = s["box_key"] in already_received
+                if desired != current:
                     book_rows.append({
                         "round_key": active_round["round_key"],
                         "year": year,
@@ -527,6 +536,7 @@ def main():
                         "student_name": s["name"],
                         "recorded_by": tutor.strip(),
                         "recorded_at": now,
+                        "received": str(desired).lower(),
                     })
 
         # Don't crash the session on a transient API error: keep the marks on
@@ -545,7 +555,7 @@ def main():
 
         msg = f"Submitted {len(rows)} marks for {class_label} on {class_date}."
         if book_rows:
-            msg += f" Recorded {len(book_rows)} book handout(s)."
+            msg += f" Recorded {len(book_rows)} book update(s)."
         st.success(msg)
 
 

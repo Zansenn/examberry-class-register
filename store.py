@@ -45,9 +45,14 @@ ROUNDS_TAB = "book_rounds"
 ROUNDS_COLUMNS = ["round_key", "label", "is_active", "created_at"]
 
 BOOKS_TAB = "books"
+# `received` lets a re-submission *correct* a handout: each submit appends the
+# current state ("true"/"false") for any student whose tick changed, and readers
+# take the latest event per (round, student). Append-only (no full-tab rewrite),
+# so it stays concurrency-safe with many tutors. Rows written before this column
+# existed have no value and are read as received (they only ever meant "given").
 BOOKS_COLUMNS = [
     "round_key", "year", "pipeline_key", "stage_key", "class_name",
-    "box_key", "student_name", "recorded_by", "recorded_at",
+    "box_key", "student_name", "recorded_by", "recorded_at", "received",
 ]
 
 # A tutor's saved classes for quick access. Keyed by the email they type in
@@ -194,12 +199,45 @@ class AttendanceStore:
             ).execute(num_retries=NUM_RETRIES)
 
     # --- books --------------------------------------------------------------
+    def _ensure_columns(self, tab, columns):
+        """Make row 1 list all `columns` (in order), extending it if the tab
+        predates a newly-added trailing column (e.g. `received`). Only appends
+        columns at the end, so existing data stays aligned and older rows simply
+        read blank for the new field. No-op once the header already matches."""
+        first = self._svc.spreadsheets().values().get(
+            spreadsheetId=self.sheet_id, range=f"{tab}!1:1",
+        ).execute(num_retries=NUM_RETRIES).get("values", [[]])
+        header = first[0] if first else []
+        if header[:len(columns)] != columns and set(columns) - set(header):
+            self._svc.spreadsheets().values().update(
+                spreadsheetId=self.sheet_id, range=f"{tab}!A1",
+                valueInputOption="RAW", body={"values": [columns]},
+            ).execute(num_retries=NUM_RETRIES)
+
     def append_books(self, rows):
         self._ensure_worksheet(BOOKS_TAB, BOOKS_COLUMNS)
+        self._ensure_columns(BOOKS_TAB, BOOKS_COLUMNS)
         return self._append(BOOKS_TAB, BOOKS_COLUMNS, rows)
 
     def read_books(self):
         return self._read(BOOKS_TAB)
+
+    def received_box_keys(self, round_key):
+        """box_keys *currently* recorded as received for a round, honouring the
+        latest event per student so a corrected un-tick is reflected. Rows with
+        no `received` value (written before the column existed) count as received."""
+        latest = {}  # box_key -> (recorded_at, received_bool)
+        for b in self.read_books():
+            if b.get("round_key") != round_key:
+                continue
+            bk = b.get("box_key")
+            if not bk:
+                continue
+            ts = b.get("recorded_at", "") or ""
+            recv = str(b.get("received", "") or "").strip().lower() != "false"
+            if bk not in latest or ts >= latest[bk][0]:
+                latest[bk] = (ts, recv)
+        return {bk for bk, (_, recv) in latest.items() if recv}
 
     # --- exam summary (read-only; written by the dashboard ETL) -------------
     def read_exam_summary(self):
