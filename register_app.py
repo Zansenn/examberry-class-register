@@ -121,9 +121,9 @@ def cached_roster(pipeline_key, stage_key):
 
 
 @st.cache_data(ttl=READ_TTL)
-def cached_active_round():
+def cached_active_rounds():
     _, store = get_clients()
-    return store.active_round()
+    return store.active_rounds()
 
 
 @st.cache_data(ttl=READ_TTL)
@@ -151,7 +151,7 @@ def _clear_roster_cache():
 
 
 def _clear_round_cache():
-    cached_active_round.clear()
+    cached_active_rounds.clear()
     cached_rounds.clear()
     cached_books_received.clear()
 
@@ -292,27 +292,46 @@ def admin_rounds_panel(store):
             st.rerun()
 
         rounds = safe("load book rounds", cached_rounds)
-        active = next((r for r in rounds if r.get("is_active") == "true"), None)
-        st.caption(f"Active round: **{active['label']}**" if active else "No active round")
+        active_labels = [r["label"] for r in rounds if r.get("is_active") == "true"]
+        st.caption("**Active now:** " + (", ".join(active_labels) if active_labels else "none"))
 
-        labels = {r["label"]: r["round_key"] for r in rounds}
-        if labels:
-            choice = st.selectbox("Activate a round", ["— none —"] + list(labels))
-            if st.button("Set active"):
-                safe("update the active round", store.set_active_round,
-                     None if choice == "— none —" else labels[choice])
-                _clear_round_cache()
-                st.rerun()
+        # Several runs can be active at once (e.g. New Term + Revision); each has
+        # its own on/off toggle rather than one mutually-exclusive choice.
+        if rounds:
+            st.markdown("**Runs** — tick to make active")
+            for r in rounds:
+                was = r.get("is_active") == "true"
+                now_on = st.checkbox(r["label"], value=was, key=f"active_{r['round_key']}")
+                if now_on != was:
+                    safe("update the run", store.set_round_active, r["round_key"], now_on)
+                    _clear_round_cache()
+                    st.rerun()
 
-        new_label = st.text_input("New round label", placeholder="Term 1 – 1st")
-        if st.button("Create round"):
+        new_label = st.text_input("New run label", placeholder="New Term")
+        if st.button("Create run"):
             if new_label.strip():
-                safe("create the round", store.add_round, new_label.strip())
+                safe("create the run", store.add_round, new_label.strip())
                 _clear_round_cache()
-                st.success(f"Created round '{new_label.strip()}'")
+                st.success(f"Created run '{new_label.strip()}'")
                 st.rerun()
             else:
                 st.warning("Enter a label first.")
+
+        # Delete a run created by mistake (also clears any handouts logged to it).
+        if rounds:
+            st.divider()
+            st.markdown("**Delete a run**")
+            opts = {f"{r['label']} · {r.get('created_at', '')[:10]}": r["round_key"]
+                    for r in rounds}
+            choice = st.selectbox("Run to delete", ["— none —"] + list(opts), key="del_run")
+            if choice != "— none —":
+                st.warning(f"Permanently removes **{choice}** and any book handouts "
+                           "recorded for it. This can't be undone.")
+                if st.button("Delete run", type="secondary"):
+                    safe("delete the run", store.delete_round, opts[choice])
+                    _clear_round_cache()
+                    st.success("Run deleted.")
+                    st.rerun()
 
 
 def main():
@@ -324,6 +343,14 @@ def main():
     st.title("Class Register")
 
     client, store = get_clients()
+
+    # Callout: which book run(s) are active right now (shared across all classes).
+    active_rounds = safe("check book runs", cached_active_rounds)
+    if active_rounds:
+        names = " · ".join(f"**{r['label']}**" for r in active_rounds)
+        st.info(f"📚 Active book run(s): {names}  \n"
+                "Record handouts in the **Book handouts** section under each class.")
+
     pipelines = safe("load the class lists", get_pipelines)
 
     # --- who + what (sidebar) ----------------------------------------------
@@ -401,26 +428,16 @@ def main():
     adhoc = adhoc_keys()
     exam_summary = get_exam_summary()  # box_key -> performance; {} if no ELP data
 
-    # Books: only show the checkbox column when an admin has activated a round.
-    # Students already recorded for the round are shown ticked + locked, so the
-    # outstanding pupils stand out.
-    active_round = safe("check the books round", cached_active_round)
-    already_received = set()
-    if active_round:
-        already_received = safe("load book handouts", cached_books_received,
-                                active_round["round_key"])
+    # Current received state of each active book run, used to render one
+    # collapsible section per run below (open while a run still has outstanding
+    # pupils, collapsed once everyone in this class has received it).
+    received_by_round = {
+        r["round_key"]: safe("load book handouts", cached_books_received, r["round_key"])
+        for r in active_rounds
+    }
 
     st.subheader(f"{class_label}")
     st.caption(f"{len(students)} students")
-    if active_round:
-        # Prominent so the tutor always knows *which* delivery they're recording
-        # (only one round is active at a time; an admin re-activates an earlier
-        # round to catch up a child who missed it).
-        st.info(
-            f"📚 **Book handout — {active_round['label']}**  \n"
-            "Tick **(books given)** beside each student as they receive *this* "
-            "delivery's books. Untick to correct a mistake."
-        )
     if any(s["box_key"] in exam_summary for s in students):
         st.caption(
             "📊 Exam performance (updated nightly, mirrors the ELP): "
@@ -432,11 +449,9 @@ def main():
         )
 
     marks = {}
-    books_ticked = {}
     for s in students:
         is_adhoc = s["box_key"] in adhoc
-        layout = [4, 5, 1, 1] if active_round else [4, 6, 1]
-        cols = st.columns(layout)
+        cols = st.columns([4, 6, 1])
         prefix = "🆕 " if is_adhoc else ""
         perf = exam_summary.get(s["box_key"])
         url = elp_profile_url(perf)
@@ -451,13 +466,6 @@ def main():
             s["name"], STATUS_OPTIONS, index=0, horizontal=True,
             label_visibility="collapsed", key=f"mark_{s['box_key']}",
         )
-        if active_round:
-            had = s["box_key"] in already_received
-            books_ticked[s["box_key"]] = cols[2].checkbox(
-                "📚 (books given)", value=had, key=f"book_{s['box_key']}",
-                help="Tick = books given this round · untick to correct a mistake",
-                label_visibility="collapsed",
-            )
         # Removal is only offered for ad-hoc adds, and only where a holding
         # stage exists to move them back to.
         rm_col = cols[-1]
@@ -482,18 +490,32 @@ def main():
             else:
                 st.warning("Enter a name first.")
 
-    # --- books report (this class, active round) ---------------------------
-    if active_round:
-        with st.expander(f"📚 Books status — {active_round['label']}"):
-            outstanding = [s["name"] for s in students if s["box_key"] not in already_received]
-            received = [s["name"] for s in students if s["box_key"] in already_received]
-            st.caption(f"{len(received)} received · {len(outstanding)} outstanding")
-            if outstanding:
-                st.markdown("**Not yet received:**")
-                for name in outstanding:
-                    st.markdown(f"- {name}")
-            else:
-                st.success("All students in this class have received their books.")
+    # --- book handouts (one collapsible section per active run) -------------
+    # Each active run gets its own panel: open while any pupil here is still
+    # outstanding, auto-collapsed to a ✅ summary once everyone's received it.
+    # A collapsed panel can be reopened to correct a mistake. Ticks are gathered
+    # here and saved together with the register on Submit.
+    books_ticked = {}  # round_key -> {box_key: bool}
+    if active_rounds:
+        st.markdown("### 📚 Book handouts")
+        for r in active_rounds:
+            rk = r["round_key"]
+            received = received_by_round[rk]
+            outstanding = [s for s in students if s["box_key"] not in received]
+            complete = not outstanding
+            header = (f"✅ {r['label']} — all received"
+                      if complete else
+                      f"📕 {r['label']} — {len(outstanding)} of {len(students)} outstanding")
+            with st.expander(header, expanded=not complete):
+                st.caption("Tick each student as they receive this run's books · "
+                           "untick to correct a mistake.")
+                ticks = {}
+                for s in students:
+                    ticks[s["box_key"]] = st.checkbox(
+                        s["name"], value=s["box_key"] in received,
+                        key=f"book_{rk}_{s['box_key']}",
+                    )
+                books_ticked[rk] = ticks
 
     # --- submit -------------------------------------------------------------
     st.divider()
@@ -516,18 +538,22 @@ def main():
             "submitted_at": now,
         } for s in students]
 
-        # Record book-handout *changes* only: a row whenever a student's tick now
-        # differs from what's on record (newly given, or unticked to correct a
-        # mistake). Readers take the latest event per student, so this re-submit
-        # overwrites the earlier state without rewriting the whole tab.
+        # Record book-handout *changes* only, across every active run: a row
+        # whenever a student's tick now differs from what's on record (newly
+        # given, or unticked to correct a mistake). Readers take the latest event
+        # per student, so this re-submit overwrites the earlier state without
+        # rewriting the whole tab.
         book_rows = []
-        if active_round:
+        for r in active_rounds:
+            rk = r["round_key"]
+            received = received_by_round[rk]
+            ticks = books_ticked.get(rk, {})
             for s in students:
-                desired = bool(books_ticked.get(s["box_key"]))
-                current = s["box_key"] in already_received
+                desired = bool(ticks.get(s["box_key"]))
+                current = s["box_key"] in received
                 if desired != current:
                     book_rows.append({
-                        "round_key": active_round["round_key"],
+                        "round_key": rk,
                         "year": year,
                         "pipeline_key": pipe["key"],
                         "stage_key": stage_key,
@@ -546,7 +572,7 @@ def main():
             store.append_rows(rows)
             if book_rows:
                 store.append_books(book_rows)
-                _clear_round_cache()  # so the ticks show locked next render
+                _clear_round_cache()  # so the ticks reflect the new state next render
         except Exception:
             st.error("⚠️ Couldn't save the register just now — the server may be "
                      "busy. Your marks are still here; tap **Submit register** "

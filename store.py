@@ -179,12 +179,40 @@ class AttendanceStore:
             r["is_active"] = "true" if r.get("round_key") == round_key else "false"
         self._overwrite(ROUNDS_TAB, ROUNDS_COLUMNS, rounds)
 
+    def set_round_active(self, round_key, is_active):
+        """Toggle one round's active flag, leaving the others untouched, so
+        several runs can be active at once (e.g. New Term + Revision)."""
+        self._ensure_worksheet(ROUNDS_TAB, ROUNDS_COLUMNS)
+        rounds = self.read_rounds()
+        for r in rounds:
+            if r.get("round_key") == round_key:
+                r["is_active"] = "true" if is_active else "false"
+        self._overwrite(ROUNDS_TAB, ROUNDS_COLUMNS, rounds)
+
+    def delete_round(self, round_key):
+        """Permanently remove a round (e.g. created by mistake) and any handout
+        rows recorded against it. Full-tab rewrites — fine for a rare admin action."""
+        self._ensure_worksheet(ROUNDS_TAB, ROUNDS_COLUMNS)
+        rounds = [r for r in self.read_rounds() if r.get("round_key") != round_key]
+        self._overwrite(ROUNDS_TAB, ROUNDS_COLUMNS, rounds)
+        books = self.read_books()
+        if any(b.get("round_key") == round_key for b in books):
+            self._ensure_columns(BOOKS_TAB, BOOKS_COLUMNS)
+            kept = [b for b in books if b.get("round_key") != round_key]
+            self._overwrite(BOOKS_TAB, BOOKS_COLUMNS, kept)
+
     def active_round(self):
-        """The single active round dict, or None."""
+        """The single active round dict, or None. (Legacy single-round helper;
+        prefer active_rounds() now that several runs can be active at once.)"""
         for r in self.read_rounds():
             if r.get("is_active") == "true":
                 return r
         return None
+
+    def active_rounds(self):
+        """All currently-active rounds, newest first."""
+        active = [r for r in self.read_rounds() if r.get("is_active") == "true"]
+        return sorted(active, key=lambda r: r.get("created_at", ""), reverse=True)
 
     def _overwrite(self, tab, columns, rows):
         """Replace all data rows (keeps header)."""
